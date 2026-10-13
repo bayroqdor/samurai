@@ -91,6 +91,7 @@ class SpamConfig(BaseModel):
     # extra display-name bait tokens, appended to the built-in lists
     name_blacklist_ru: List[str] = Field(default_factory=list)
     name_blacklist_en: List[str] = Field(default_factory=list)
+    name_blacklist_uz: List[str] = Field(default_factory=list)
 
     # Exact display names learning from moderator-confirmed report bans
     learned_name_rep_threshold: int = Field(default=30, ge=0)
@@ -107,6 +108,14 @@ class ProfanityConfig(BaseModel):
 
     allowlist_ru: List[str] = Field(default_factory=list)
     allowlist_en: List[str] = Field(default_factory=list)
+    allowlist_uz: List[str] = Field(default_factory=list)
+    # extra Uzbek roots, prefix-matched after normalization (both scripts)
+    blocklist_uz: List[str] = Field(default_factory=list)
+
+    # filters to run; any of "uz", "ru", "en"
+    languages: List[str] = Field(default_factory=lambda: ["uz", "ru", "en"])
+    # skip the ru/en regexes for text detected as Uzbek (they misfire on it)
+    uzbek_routing: bool = True
 
 
 class NSFWConfig(BaseModel):
