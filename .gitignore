@@ -59,6 +59,10 @@ temp/
 
 # Runtime data
 data/
+!uzspam_model/data/
+
+# Exported moderation data (contains users' messages)
+exports/
 
 # AI old unused files
 ruspam_model/onnx

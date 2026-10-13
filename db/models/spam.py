@@ -15,3 +15,9 @@ class Spam(ormar.Model):
     date: datetime = ormar.DateTime(default=datetime.now)
     chat_id: int = ormar.BigInteger(nullable=True, index=True)
     user_id: int = ormar.BigInteger(nullable=True, index=True)
+    # who flagged it: "manual", "ruspam", "uzspam", "substring"
+    source: str = ormar.String(max_length=16, nullable=True)
+    # model spam probability, when a model flagged it
+    score: float = ormar.Float(nullable=True)
+    # an admin confirmed or corrected the label (only these are training data)
+    is_reviewed: bool = ormar.Boolean(default=False)

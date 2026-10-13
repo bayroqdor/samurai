@@ -21,8 +21,8 @@ The lexicon is a starting point; native speakers should extend it through
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from .normalize import MappedText, candidates, fold, fold_mapped
 

@@ -109,6 +109,16 @@ profanity-user-kicked = Ваше имя в Telegram содержит ненор�
 # ========== THROTTLING ==========
 throttle-warning = ⚠️ Слишком много сообщений. Подождите немного.
 
+# ========== АНТИСПАМ (канал логов) ==========
+log-author = Автор
+log-spam-model = Модель
+log-spam-ml-deleted = 🤖 Антиспам (ИИ)
+log-spam-ml-shadow = 🧪 Антиспам (ИИ, тестовый режим: не удалено)
+spam-review-ban = ❌ Это спам + заблокировать пользователя
+spam-review-not-spam = ❎ Это НЕ спам
+spam-review-test = Убрать из БД, это тест
+
+
 # ========== FUN RESPONSES - !бу command ==========
 # Use '---' as delimiter between responses
 bu-responses =

@@ -107,7 +107,7 @@ class ModerationBurstTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(group_events, "retrieve_or_create_member", new=AsyncMock(return_value=member)), \
              patch.object(group_events, "retrieve_tgmember", new=AsyncMock(return_value=role)), \
              patch("middlewares.recent_messages.retrieve_tgmember", new=AsyncMock(return_value=role)), \
-             patch.object(group_events, "ruspam_predict", return_value=False), \
+             patch.object(group_events, "spam_classify", return_value=group_events.SpamVerdict(False, "ruspam")), \
              patch.object(group_events, "queue_member_update", new_callable=AsyncMock) as reputation, \
              patch.object(type(group_events.config.groups), "is_linked_channel", return_value=True):
             updates = [Update(update_id=i, message=self.message(i, text=f"Обычный комментарий номер {i}",

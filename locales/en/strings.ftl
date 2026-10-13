@@ -109,6 +109,16 @@ profanity-user-kicked = Your Telegram name contains profanity.
 # ========== THROTTLING ==========
 throttle-warning = ⚠️ Too many messages. Please wait a moment.
 
+# ========== ANTI-SPAM (logs channel) ==========
+log-author = Author
+log-spam-model = Model
+log-spam-ml-deleted = 🤖 Anti-spam (AI)
+log-spam-ml-shadow = 🧪 Anti-spam (AI, shadow mode: not deleted)
+spam-review-ban = ❌ Spam + ban the user
+spam-review-not-spam = ❎ NOT spam
+spam-review-test = Remove from DB, it was a test
+
+
 # ========== FUN RESPONSES - !бу command ==========
 bu-responses =
     Boo-haha!

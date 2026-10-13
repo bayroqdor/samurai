@@ -6,6 +6,7 @@ Features:
 - Quick substring check before expensive ML inference
 - Auto-unload after TTL to save RAM
 """
+from dataclasses import dataclass
 from typing import Optional
 import logging
 import threading
@@ -14,6 +15,10 @@ import gc
 
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+from config import config
+from libs.uztext.langdetect import is_uzbek
+from services import uzspam
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +75,46 @@ def _touch() -> None:
     _last_used = time.time()
 
 
+@dataclass(frozen=True, slots=True)
+class SpamVerdict:
+    is_spam: bool
+    model: str                    # "substring" | "ruspam" | "uzspam"
+    score: Optional[float] = None
+    shadow: bool = False          # report for review only, do not act
+
+
+def _matches_known_substring(text: str) -> bool:
+    text_lower = text.lower()
+    return any(sub in text_lower for sub in _SPAM_SUBSTRINGS_LOWER)
+
+
+def classify(text: str) -> SpamVerdict:
+    """
+    Route a message to the right spam model.
+
+    Uzbek text goes to the Uzbek model: the Russian model flags roughly a
+    quarter of ordinary Uzbek messages as spam. Everything else keeps using
+    the Russian model.
+    """
+    if _matches_known_substring(text):
+        return SpamVerdict(True, "substring")
+
+    if is_uzbek(text):
+        mode = config.spam.uz_model_mode
+        if mode != "off":
+            score = uzspam.spam_probability(text)
+            if score is not None:
+                threshold = config.spam.uz_model_threshold or uzspam.default_threshold()
+                return SpamVerdict(score > threshold, "uzspam", score, shadow=mode == "shadow")
+        if not config.spam.ruspam_on_uzbek:
+            return SpamVerdict(False, "uzspam")
+
+    return SpamVerdict(predict(text), "ruspam")
+
+
 def predict(text: str) -> bool:
     """
-    Predict if text is spam.
+    Predict if text is spam with the Russian model.
 
     Args:
         text: Text to check for spam
@@ -81,8 +123,7 @@ def predict(text: str) -> bool:
         True if spam, False otherwise
     """
     # quick check for known spam patterns (O(n) string search)
-    text_lower = text.lower()
-    if any(sub in text_lower for sub in _SPAM_SUBSTRINGS_LOWER):
+    if _matches_known_substring(text):
         return True
 
     # ML prediction (lazy load models)

@@ -32,7 +32,7 @@ from services import (
     retrieve_or_create_member, retrieve_tgmember, detect_gender,
     check_for_profanity_all, check_name_for_violations, Gender
 )
-from services.spam import predict as ruspam_predict
+from services.spam import classify as spam_classify, SpamVerdict
 from services.nsfw import classify_explicit_content as nsfw_predict
 from services.cache import (
     queue_member_update, 
@@ -211,27 +211,17 @@ async def on_spam(message: Message) -> None:
         log_msg += f"\n\n<i>Автор:</i> {user_mention(message.reply_to_message.from_user)}"
 
         # create DB record
-        spam_rec = await Spam.objects.create(
-            message=msg_text,
-            is_spam=True,
+        spam_rec = await _save_spam_record(
+            msg_text,
             user_id=message.reply_to_message.from_user.id,
-            chat_id=message.chat.id
+            chat_id=message.chat.id,
+            source="manual",
+            is_reviewed=True,
         )
 
-        spam_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="❌ Это спам + заблокировать пользователя",
-                callback_data=f"spam_ban_{spam_rec.id}_{message.reply_to_message.from_user.id}"
-            )],
-            [InlineKeyboardButton(
-                text="❎ Это НЕ спам",
-                callback_data=f"spam_invert_{spam_rec.id}_{member.id}"
-            )],
-            [InlineKeyboardButton(
-                text="Убрать из БД, это тест",
-                callback_data=f"spam_test_{spam_rec.id}_{member.id}"
-            )]
-        ])
+        spam_keyboard = _spam_review_keyboard(
+            spam_rec.id, message.reply_to_message.from_user.id, member.id
+        )
 
         await message.bot.send_message(
             config.groups.logs,
@@ -675,7 +665,15 @@ async def _process_user_message(message: Message, count_clean_message: bool) -> 
             member.reputation_points < config.spam.member_reputation_threshold
         )
         
-        if should_check_spam and await asyncio.to_thread(ruspam_predict, msg_text):
+        verdict = await asyncio.to_thread(spam_classify, msg_text) if should_check_spam else None
+
+        if verdict is not None and verdict.is_spam and verdict.shadow:
+            # Uzbek model in shadow mode: only ask admins, nothing is deleted.
+            # Their answers become training data (scripts/export_spam_dataset.py)
+            if count_clean_message:
+                await _send_spam_review(message, msg_text, member, verdict, deleted=False)
+
+        elif verdict is not None and verdict.is_spam:
             # spam detected
             await message.delete()
 
@@ -683,8 +681,7 @@ async def _process_user_message(message: Message, count_clean_message: bool) -> 
                 await queue_member_update(
                     user_id, violations_count_spam=1, reputation_points=-5
                 )
-            
-            if count_clean_message:
+                await _send_spam_review(message, msg_text, member, verdict, deleted=True)
                 await _maybe_autoban(message, member, 5, "спам")
             return
 
@@ -705,6 +702,83 @@ async def _process_user_message(message: Message, count_clean_message: bool) -> 
 
 
 ### HELPER FUNCTIONS ###
+
+def _spam_review_keyboard(spam_id: int, user_id: int, member_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=get_string("spam-review-ban"),
+            callback_data=f"spam_ban_{spam_id}_{user_id}"
+        )],
+        [InlineKeyboardButton(
+            text=get_string("spam-review-not-spam"),
+            callback_data=f"spam_invert_{spam_id}_{member_id}"
+        )],
+        [InlineKeyboardButton(
+            text=get_string("spam-review-test"),
+            callback_data=f"spam_test_{spam_id}_{member_id}"
+        )]
+    ])
+
+
+async def _save_spam_record(
+    text: str,
+    *,
+    user_id: int,
+    chat_id: int,
+    source: str,
+    score: Optional[float] = None,
+    is_reviewed: bool = False,
+) -> Spam:
+    """Store a (suspected) spam message; identical texts share one record."""
+    existing = await Spam.objects.get_or_none(message=text)
+    if existing is not None:
+        if is_reviewed and not (existing.is_spam and existing.is_reviewed):
+            existing.is_spam = True
+            existing.is_reviewed = True
+            await existing.update()
+        return existing
+    return await Spam.objects.create(
+        message=text,
+        is_spam=True,
+        user_id=user_id,
+        chat_id=chat_id,
+        source=source,
+        score=score,
+        is_reviewed=is_reviewed,
+    )
+
+
+async def _send_spam_review(
+    message: Message,
+    msg_text: str,
+    member: MemberData,
+    verdict: SpamVerdict,
+    *,
+    deleted: bool,
+) -> None:
+    """Log an ML spam verdict with buttons so admins can confirm or correct it."""
+    try:
+        spam_rec = await _save_spam_record(
+            msg_text,
+            user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            source=verdict.model,
+            score=verdict.score,
+        )
+        # stay under Telegram's 4096-char message limit
+        log_msg = escape_html(msg_text[:3000])
+        log_msg += f"\n\n<i>{get_string('log-author')}:</i> {user_mention(message.from_user)}"
+        score = f"{verdict.score:.2f}" if verdict.score is not None else "-"
+        log_msg += f"\n<i>{get_string('log-spam-model')}:</i> {verdict.model} ({score})"
+        title = get_string("log-spam-ml-deleted" if deleted else "log-spam-ml-shadow")
+        await message.bot.send_message(
+            config.groups.logs,
+            generate_log_message(log_msg, title, message.chat.title),
+            reply_markup=_spam_review_keyboard(spam_rec.id, message.from_user.id, member.id),
+        )
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to log spam verdict")
+
 
 def _linked_channel_post_date(message: Message) -> Optional[datetime]:
     """Return the original post date if this message is a linked-channel post.
