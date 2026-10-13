@@ -91,10 +91,21 @@ class SpamConfig(BaseModel):
     # extra display-name bait tokens, appended to the built-in lists
     name_blacklist_ru: List[str] = Field(default_factory=list)
     name_blacklist_en: List[str] = Field(default_factory=list)
+    name_blacklist_uz: List[str] = Field(default_factory=list)
 
     # Exact display names learning from moderator-confirmed report bans
     learned_name_rep_threshold: int = Field(default=30, ge=0)
     learned_name_autoban_threshold: int = Field(default=5, gt=0)
+
+    # Uzbek spam model: "off", "shadow" (log for review, never delete) or
+    # "enforce" (delete like the Russian model does)
+    uz_model_mode: str = Field(default="shadow", pattern="^(off|shadow|enforce)$")
+    # probability above which a message counts as spam; None = the value
+    # chosen at training time (stored in the model file)
+    uz_model_threshold: float | None = Field(default=None, gt=0, lt=1)
+    # run the Russian model on Uzbek text when the Uzbek model is off/missing;
+    # it flags ~28% of ordinary Uzbek messages, so keep this off
+    ruspam_on_uzbek: bool = False
 
     # auto-ban for repeat spam offenders
     autoban_enabled: bool = True  # enable auto-ban for spam violations
@@ -107,6 +118,14 @@ class ProfanityConfig(BaseModel):
 
     allowlist_ru: List[str] = Field(default_factory=list)
     allowlist_en: List[str] = Field(default_factory=list)
+    allowlist_uz: List[str] = Field(default_factory=list)
+    # extra Uzbek roots, prefix-matched after normalization (both scripts)
+    blocklist_uz: List[str] = Field(default_factory=list)
+
+    # filters to run; any of "uz", "ru", "en"
+    languages: List[str] = Field(default_factory=lambda: ["uz", "ru", "en"])
+    # skip the ru/en regexes for text detected as Uzbek (they misfire on it)
+    uzbek_routing: bool = True
 
 
 class NSFWConfig(BaseModel):

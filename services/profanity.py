@@ -8,6 +8,9 @@ import unicodedata
 
 from config import config
 from libs.censure import Censor
+from libs.uztext import langdetect as uz_langdetect
+from libs.uztext import profanity as uz_profanity
+from libs.uztext.normalize import fold as uz_fold
 
 # Create censor instances for different languages
 censor_ru = Censor.get(lang='ru')
@@ -47,7 +50,20 @@ _CENSORS = {
     "english": censor_en,
 }
 
-_LANG_ALIASES = {"ru": "ru", "russian": "ru", "en": "en", "english": "en"}
+_LANG_ALIASES = {
+    "ru": "ru", "russian": "ru",
+    "en": "en", "english": "en",
+    "uz": "uz", "uzbek": "uz",
+}
+
+# Uzbek words the ru/en regexes misread as profanity (found by running them
+# over ~30k lines of real Uzbek Telegram/news text). Compared as prefixes of
+# the folded word, so suffixes and both scripts are covered:
+# "Jizzaxda", "Жиззахлик", "мудофааси".
+_UZ_SAFE_PREFIXES = (
+    "jizzah", "jizzak", "dildor", "mudofaa", "kuzg", "hayriya", "muyassar",
+    "husen", "memorand", "sakkiz",
+)
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
 # substitutions commonly used to evade English filters
@@ -110,8 +126,49 @@ def _canonical_language(lang: str) -> str:
 
 
 def _configured_allowlist(lang: str) -> frozenset[str]:
-    words = config.profanity.allowlist_ru if lang == "ru" else config.profanity.allowlist_en
+    words = {
+        "ru": config.profanity.allowlist_ru,
+        "en": config.profanity.allowlist_en,
+        "uz": config.profanity.allowlist_uz,
+    }[lang]
+    if lang == "uz":
+        return frozenset(uz_fold(word) for word in words)
     return frozenset(normalize_for_detection(word, lang) for word in words)
+
+
+def _mask_uzbek_safe_words(text: str) -> str:
+    chars = list(text)
+    for match in _WORD_RE.finditer(text):
+        if uz_fold(match.group()).startswith(_UZ_SAFE_PREFIXES):
+            chars[match.start():match.end()] = " " * (match.end() - match.start())
+    return "".join(chars)
+
+
+def languages_for(text: str) -> tuple[str, ...]:
+    """Which profanity filters to run on ``text``.
+
+    The Uzbek filter always runs (it also knows Russian mat in both scripts).
+    Russian/English regexes are skipped for text that reads as Uzbek, where
+    they mostly fire on ordinary words.
+    """
+    enabled = tuple(_canonical_language(lang) for lang in config.profanity.languages)
+    if "uz" in enabled and config.profanity.uzbek_routing and uz_langdetect.is_uzbek(text):
+        return ("uz",)
+    return enabled
+
+
+def _check_uzbek(text: str, allowlist: Iterable[str] | None) -> ProfanityCheckResult:
+    match = uz_profanity.find(
+        text,
+        allowlist=_configured_allowlist("uz") if allowlist is None else allowlist,
+        blocklist=config.profanity.blocklist_uz,
+    )
+    if match is None:
+        return ProfanityCheckResult(False, None, CensureLineResult(text, 0, 0, [], [], []))
+    word = text[match.start:match.end]
+    return ProfanityCheckResult(
+        True, word, CensureLineResult(text, 1, 0, [word], [], [match.label])
+    )
 
 
 def _mask_allowlisted_words(text: str, lang: str, allowlist: Iterable[str]) -> str:
@@ -172,8 +229,12 @@ def check_for_profanity(
         Tuple of (is_profanity_detected, detected_word, line_info)
     """
     canonical_lang = _canonical_language(lang)
+    if canonical_lang == "uz":
+        return _check_uzbek(text, allowlist)
+
     censor = _CENSORS[canonical_lang]
     normalized = normalize_for_detection(text, canonical_lang)
+    normalized = _mask_uzbek_safe_words(normalized)
     normalized = _mask_allowlisted_words(
         normalized,
         canonical_lang,
@@ -206,17 +267,35 @@ def check_for_profanity(
 
 def find_profanity(
     text: str,
-    languages: Iterable[str] = ("ru", "en"),
+    languages: Iterable[str] | None = None,
     *,
     allowlists: Mapping[str, Iterable[str]] | None = None,
 ) -> tuple[ProfanityMatch, ...]:
-    """Return explainable first matches for each requested language."""
+    """Return explainable first matches for each requested language.
+
+    ``languages=None`` uses the same routing as the group filter.
+    """
+    if languages is None:
+        languages = languages_for(text)
     matches: list[ProfanityMatch] = []
     for requested_lang in languages:
         lang = _canonical_language(requested_lang)
         language_allowlist = None if allowlists is None else allowlists.get(lang)
         result = check_for_profanity(text, lang, allowlist=language_allowlist)
         if not result.detected or result.word is None:
+            continue
+
+        if lang == "uz":
+            start = text.find(result.word)
+            matches.append(ProfanityMatch(
+                text=result.word,
+                normalized=uz_fold(result.word),
+                start=start,
+                end=start + len(result.word),
+                language=lang,
+                reason="word",
+                pattern=str(result.line.detected_patterns[0]),
+            ))
             continue
 
         detection_text, source_offsets = _normalize_with_offsets(text, lang)
@@ -249,12 +328,12 @@ def find_profanity(
 
 def check_for_profanity_all(text: str) -> tuple[bool, str | None]:
     """
-    Check text for profanity in all supported languages.
+    Check text for profanity in every language that applies to it.
 
     Returns:
         Tuple of (is_profanity_detected, detected_word)
     """
-    for lang in ("ru", "en"):
+    for lang in languages_for(text):
         detected, word, _ = check_for_profanity(text, lang=lang)
         if detected:
             return True, word
@@ -301,6 +380,25 @@ _NAME_BLACKLIST_EN = (
 )
 
 
+# Uzbek bait words, matched against the folded name (both scripts, no
+# apostrophes, x->h): "Интим 18+", "Lichkaga yoz", "Yalang'och qizlar"
+_NAME_BLACKLIST_UZ = (
+    "intim",
+    "seks",
+    "porno",
+    "lichka",
+    "lichkag",
+    "yalangoch",
+    "tanishuv",
+    "eskort",
+    "fohisha",
+    "profilimga",
+    "profilga",
+    "kanalimga",
+    "sahifamga",
+)
+
+
 def check_name_for_violations(name: str) -> bool:
     """
     Check if a name contains violations (blacklisted words or profanity).
@@ -319,6 +417,11 @@ def check_name_for_violations(name: str) -> bool:
         (normalize_for_detection(name, "ru").translate(_RU_CONFUSABLES),
          _NAME_BLACKLIST_RU + tuple(config.spam.name_blacklist_ru)),
     )
+
+    if "uz" in config.profanity.languages:
+        checks += ((uz_fold(name), _NAME_BLACKLIST_UZ + tuple(
+            uz_fold(token) for token in config.spam.name_blacklist_uz
+        )),)
 
     for normalized, blacklist in checks:
         collapsed = _NAME_SEPARATORS_RE.sub("", normalized)

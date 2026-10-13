@@ -5,8 +5,8 @@ With reports, logs, profanity filter, anti-spam AI, NSFW detection, reputation s
 
 ## What does Samurai do?
 
-- **Anti-Profanity**: Automatically detects and removes messages containing profanity (Russian/English)
-- **Anti-Spam**: ML-based spam detection for new users
+- **Anti-Profanity**: Automatically detects and removes messages containing profanity (Uzbek/Russian/English)
+- **Anti-Spam**: ML-based spam detection for new users (separate models for Uzbek and Russian text)
 - **NSFW Detection**: Analysis of eligible in-chat images and user profile photos, with recent-message cleanup after detection
 - **Reputation System**: Users gain reputation through positive participation
 - **Report System**: Users can report messages to admins
@@ -45,8 +45,11 @@ samurai/
 │   ├── en/
 │   │   ├── strings.ftl    # English translations
 │   │   └── announcements.ftl
-│   └── ru/
-│       ├── strings.ftl    # Russian translations
+│   ├── ru/
+│   │   ├── strings.ftl    # Russian translations
+│   │   └── announcements.ftl
+│   └── uz/
+│       ├── strings.ftl    # Uzbek (Latin) translations
 │       └── announcements.ftl
 ├── middlewares/
 │   ├── __init__.py
@@ -63,13 +66,17 @@ samurai/
 │   ├── ml_manager.py      # Unloads unused ML models from memory after some time
 │   ├── recent_messages.py # Recent-message history and cleanup
 │   ├── reports.py         # Report state and duplicate prevention
-│   └── spam.py            # Spam detection
+│   ├── spam.py            # Spam detection (routes Uzbek text to uzspam)
+│   └── uzspam.py          # Uzbek spam model
 ├── utils/
 │   ├── helpers.py         # Utility functions
 │   ├── enums.py           # Some useful enums to keep the codebase consistent
 │   └── localization.py    # Localization exports
 ├── libs/                  # External libraries (censure, gender_extractor)
-├── ruspam_model/          # ML model for spam detection
+├── ruspam_model/          # ML model for spam detection (Russian)
+├── uzspam_model/          # Uzbek spam model, its training script and seed data
+├── scripts/
+│   └── export_spam_dataset.py  # Moderated spam decisions -> training JSONL
 ├── config.toml            # Main configuration file
 ├── pyproject.toml         # Package metadata and dependencies
 ├── requirements.txt
@@ -77,6 +84,68 @@ samurai/
 ├── db_init.py             # Use this to initialize your database tables
 └── .env.example
 ```
+
+## Uzbek support
+
+Uzbek chats mix Latin and Cyrillic (often in one word), write o'/g' with
+many different apostrophes, and dodge filters with digits, stretched letters
+and spelled-out words. `libs/uztext/` normalizes all of that before anything
+is checked.
+
+### Profanity
+
+- `libs/uztext/profanity.py` holds a root lexicon matched at the start of each
+  word, so Uzbek suffixes are covered ("sikay", "sikaman", "сикиб"...). It also
+  knows Russian mat in both scripts and common English swears.
+- `libs/uztext/langdetect.py` decides whether a message is Uzbek. Uzbek text is
+  checked by the Uzbek filter only: the Russian/English regexes misfire on
+  ordinary Uzbek words ("Jizzax", "Dildora", "bo'lgandan", "мудофаа").
+- Extend the lexicon without code changes in `config.toml`:
+
+  ```toml
+  [profanity]
+  blocklist_uz = ["so'kinish"]   # extra roots, any script, prefix-matched
+  allowlist_uz = ["sikl"]        # words that must never be flagged
+  ```
+
+- `!prof <text>` shows which filter and root matched.
+
+### Spam
+
+The Russian model flags ~28% of ordinary Uzbek messages as spam, so Uzbek text
+goes to a separate model (`uzspam_model/`, char n-gram TF-IDF + logistic
+regression, ~1 MB, sub-millisecond on CPU).
+
+`[spam] uz_model_mode` controls it:
+
+| Mode | Behaviour |
+|------|-----------|
+| `shadow` *(default)* | Suspected spam is posted to the logs channel with review buttons, **nothing is deleted** |
+| `enforce` | Deleted and penalized like the Russian model |
+| `off` | Not used (and the Russian model is still not run on Uzbek text unless `ruspam_on_uzbek = true`) |
+
+Every automatic spam decision is stored in the `spam` table and posted to the
+logs channel with **Spam + ban / Not spam / Test** buttons. The admins' answers
+are the training data:
+
+```bash
+# 1. export reviewed decisions
+python -m scripts.export_spam_dataset exports/spam.jsonl
+
+# 2. retrain (pulls the public datasets too; prints held-out metrics)
+pip install -r uzspam_model/requirements-train.txt
+python -m uzspam_model.train --data exports/spam.jsonl
+
+# 3. restart the bot; switch to uz_model_mode = "enforce" once the
+#    shadow-mode logs show few false positives
+```
+
+`uzspam_model/data/seed.jsonl` holds hand-written examples by spam category
+(jobs, crypto, betting, loans, adult, documents, giveaways, phishing, promo)
+and tricky normal messages about money and work; add more lines there freely.
+
+> The `spam` table gained `source`, `score` and `is_reviewed` columns. A fresh
+> database gets them from `db_init.py`; an existing one needs them added by hand.
 
 ## Internationalization (i18n)
 
@@ -271,7 +340,7 @@ echo '/swapfile none swap sw 0 0' >> /etc/fstab
 |----------|-------------|
 | `BOT_TOKEN` | Telegram bot token |
 | `BOT_OWNER` | Owner's Telegram user ID |
-| `BOT_LOCALE` | Default locale, such as `ru` or `en` |
+| `BOT_LOCALE` | Default locale, such as `uz`, `ru` or `en` |
 | `GROUPS_MAIN` | Main group chat ID __(can be a comma separated list)__ |
 | `GROUPS_REPORTS` | Reports group chat ID |
 | `GROUPS_LOGS` | Logs group chat ID |
@@ -327,12 +396,15 @@ Commands registered with both prefixes can also be used with `/` instead of `!`.
 The bot uses two external libraries in the `libs/` folder:
 
 - **censure**: Russian/English profanity detection
+- **uztext**: Uzbek normalization, language detection and profanity lexicon (written for this project)
 - **gender_extractor**: Gender detection from names
 
 ## Credits
 https://github.com/masteroncluster/py-censure - Profanity filter we used as a base  
 https://github.com/MasterGroosha/telegram-report-bot - Reports system we used as a base  
 https://huggingface.co/RUSpam/spam_deberta_v4 - Anti-Spam AI model we used as a base  
+https://huggingface.co/datasets/sukhrobnurali/uzbek_spam_dataset - Uzbek spam training data  
+https://huggingface.co/datasets/tahrirchi/uz-crawl - Real Uzbek text used as "normal" training examples  
 https://github.com/wwydmanski/gender-extractor - Gender detection we used as a base  
 https://huggingface.co/prithivMLmods/siglip2-x256-explicit-content - Our current NSFW detection model
 

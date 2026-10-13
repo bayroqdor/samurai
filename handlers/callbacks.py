@@ -667,6 +667,8 @@ async def callback_spam_ban(call: CallbackQuery) -> None:
         await ban_and_cleanup(call.bot, chat_id, user_id)
             
         spam_rec.is_blocked = True
+        spam_rec.is_spam = True
+        spam_rec.is_reviewed = True
         await spam_rec.update()
     except Exception:
         logger.exception("Failed to ban spam user %s", user_id)
@@ -691,6 +693,7 @@ async def callback_spam_not_spam(call: CallbackQuery) -> None:
     try:
         spam_rec = await Spam.objects.get(id=spam_id)
         spam_rec.is_spam = False
+        spam_rec.is_reviewed = True
         await spam_rec.update()
     except Exception:
         pass

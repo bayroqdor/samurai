@@ -39,5 +39,11 @@ transformers>=4.30.0
 numpy>=1.24.0
 pillow>=10.0.0
 
+# Uzbek spam model (uzspam_model/model.joblib). The artifact is a pickled
+# scikit-learn pipeline: keep this on the minor version it was trained with,
+# and retrain (python -m uzspam_model.train) when bumping it
+scikit-learn~=1.9.0
+joblib>=1.3
+
 # HuggingFace (for model downloads)
 # hf_xet

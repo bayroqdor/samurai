@@ -9,11 +9,13 @@ version_codename = "Gojo Satoru"
 
 
 [locale]
-# default locale for bot messages
-default = "ru"
+# default locale for bot messages (group replies, logs, announcements);
+# users whose Telegram app is set to one of `available` get that language
+# in personal replies
+default = "uz"
 
 # available locales (must have corresponding folder in locales/)
-available = ["ru", "en"]
+available = ["uz", "ru", "en"]
 
 
 
@@ -108,7 +110,22 @@ burst_action = "log"
 # appended to the built-in lists (porn/18+/onlyfans/etc)
 name_blacklist_ru = ["🎀", "впн", "🌼", "лс", "личк"]
 name_blacklist_en = ["🎀", "vpn", "🌼", "pm"]
+# matched after Uzbek normalization (Latin/Cyrillic, any apostrophe)
+name_blacklist_uz = ["🎀", "🌼", "vpn"]
 
+
+# Uzbek spam model (uzspam_model/, retrain with: python -m uzspam_model.train)
+# "off"     = never used
+# "shadow"  = suspected spam is posted to the logs channel with review buttons
+#             but NOT deleted - use this to collect labels and check accuracy
+# "enforce" = delete and penalize like the Russian model
+uz_model_mode = "shadow"
+
+# spam probability cutoff (0-1); comment out to use the value picked at training
+# uz_model_threshold = 0.7
+
+# the Russian model flags ~28% of normal Uzbek chat as spam: leave this off
+ruspam_on_uzbek = false
 
 # auto-ban users who exceed spam violations threshold
 autoban_enabled = true
@@ -121,8 +138,23 @@ autoban_rep_threshold = 50
 
 
 [profanity]
+# filters to run: "uz", "ru", "en"
+languages = ["uz", "ru", "en"]
+
+# text detected as Uzbek is checked by the Uzbek filter only (it also catches
+# Russian mat in both scripts); the ru/en regexes misfire on ordinary Uzbek
+# words like "Jizzax" or "bo'lgandan"
+uzbek_routing = true
+
 allowlist_ru = []
 allowlist_en = []
+
+# exact Uzbek words that must never be treated as profanity (any script)
+allowlist_uz = []
+
+# extra Uzbek roots to block; prefix-matched after normalization, so
+# "so'kinish" also covers "сўкиниш", "s0kinishlar", "s o k i n i s h"
+blocklist_uz = []
 
 
 
