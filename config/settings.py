@@ -1,0 +1,315 @@
+from functools import lru_cache
+from pathlib import Path
+from tomllib import load
+from typing import Type, TypeVar, List
+
+from pydantic import BaseModel, Field, SecretStr, field_validator
+
+
+ConfigType = TypeVar("ConfigType", bound=BaseModel)
+
+
+class BotConfig(BaseModel):
+    owner: int = 0
+    token: SecretStr = SecretStr("")
+    version: str = "0.7"
+    version_codename: str = "Eternal Ronin"
+
+
+class LocaleConfig(BaseModel):
+    default: str = "ru"
+    available: List[str] = ["ru", "en"]
+
+
+class GroupsConfig(BaseModel):
+    # list of main chat IDs where bot operates
+    main: List[int] = []
+    # single channel for reports
+    reports: int = 0
+    # single channel for logs
+    logs: int = 0
+    # list of linked channels (for auto-forward detection)
+    linked_channels: List[int] = []
+    # time in seconds for new users media restriction
+    new_users_nomedia: int = 7776000
+    
+    # cached sets for O(1) lookup (populated after init)
+    _main_set: set = set()
+    _linked_channels_set: set = set()
+    
+    def model_post_init(self, __context) -> None:
+        """Build sets after model initialization."""
+        object.__setattr__(self, '_main_set', set(self.main))
+        object.__setattr__(self, '_linked_channels_set', set(self.linked_channels))
+    
+    def is_main_group(self, chat_id: int) -> bool:
+        """Check if chat_id is a main group (O(1) lookup)."""
+        return chat_id in self._main_set
+    
+    def is_linked_channel(self, chat_id: int) -> bool:
+        """Check if chat_id is a linked channel (O(1) lookup)."""
+        return chat_id in self._linked_channels_set
+    
+    def rebuild_sets(self) -> None:
+        """Rebuild sets after modifying lists."""
+        object.__setattr__(self, '_main_set', set(self.main))
+        object.__setattr__(self, '_linked_channels_set', set(self.linked_channels))
+
+
+class SpamConfig(BaseModel):
+    member_messages_threshold: int = 10
+    member_reputation_threshold: int = 10
+    allow_media_threshold: int = 20
+    remove_first_comments_interval: int = 30
+    allow_comments_rep_threshold: int = 50
+    women_remove_first_comments_interval: int = 600
+    allow_comments_rep_threshold__woman: int = 10
+    
+    # single-emoji spam (bots spamming lone emojis)
+    single_emoji_rep_threshold: int = 30  # delete single-emoji messages below this rep
+
+    # link spam (t.me invites, external URLs)
+    links_rep_threshold: int = 50  # delete messages with links below this rep
+
+    # cross-chat replies ("Reply in Another Chat")
+    external_reply_rep_threshold: int = 50  # delete cross-chat replies below this rep
+
+    # forward restriction for low-rep users
+    allow_forwards_threshold: int = 30  # rep required to forward messages
+    forward_violation_penalty: int = 10  # rep penalty for forwarding
+    
+    # coordinated newcomer burst detection
+    burst_enabled: bool = True
+    burst_window_seconds: int = 120   # window to count distinct newcomers in
+    burst_min_accounts: int = 4       # distinct low-rep accounts to call it a burst
+    burst_rep_threshold: int = 15     # rep below which an account counts as a newcomer
+    burst_max_tracked: int = 200      # per-chat ring buffer size
+    burst_alert_cooldown: int = 300   # seconds between burst alerts per chat
+    # "log" reports to the logs channel only; "delete" also removes the message
+    burst_action: str = "log"
+
+    # extra display-name bait tokens, appended to the built-in lists
+    name_blacklist_ru: List[str] = Field(default_factory=list)
+    name_blacklist_en: List[str] = Field(default_factory=list)
+
+    # Exact display names learning from moderator-confirmed report bans
+    learned_name_rep_threshold: int = Field(default=30, ge=0)
+    learned_name_autoban_threshold: int = Field(default=5, gt=0)
+
+    # auto-ban for repeat spam offenders
+    autoban_enabled: bool = True  # enable auto-ban for spam violations
+    autoban_threshold: int = 100  # ban user when violations exceed this
+    autoban_rep_threshold: int = 100  # only auto-ban if rep is below this
+
+
+class ProfanityConfig(BaseModel):
+    """Language-specific exceptions for the profanity detector."""
+
+    allowlist_ru: List[str] = Field(default_factory=list)
+    allowlist_en: List[str] = Field(default_factory=list)
+
+
+class NSFWConfig(BaseModel):
+    enabled: bool = True
+    comb_sensual_prediction_threshold: float = 0.15
+    comb_pornography_prediction_threshold: float = 0.15
+    sensual_prediction_threshold: float = 0.7
+    pornography_prediction_threshold: float = 0.85
+    hentai_prediction_threshold: float = 0.9
+    normal_prediction_threshold: float = 0.3
+    normal_comb_sensual_prediction_threshold: float = 0.5
+    normal_comb_pornography_prediction_threshold: float = 0.2
+    anime_prediction_threshold: float = 0.7
+
+    # Softcore tier: suggestive-but-clothed avatars that the strict rules above miss.
+    # Never auto-bans. Unsafe profiles trigger recent-message cleanup; a soft
+    # in-chat image alone only removes that image.
+    soft_enabled: bool = True
+    soft_sensual_threshold: float = 0.35
+    soft_pornography_threshold: float = 0.05
+    soft_hentai_threshold: float = 0.5
+    soft_normal_ceiling: float = 0.6
+
+    check_rep_threshold: int = 50
+    profile_check_cooldown: int = 3600
+    recent_cleanup_seconds: int = Field(default=300, gt=0)
+    recent_messages_max: int = Field(default=100, gt=0)
+    recent_users_max: int = Field(default=10000, gt=0)
+
+
+class DatabaseConfig(BaseModel):
+    url: str = "sqlite+aiosqlite:///db.sqlite"
+
+
+class ThrottlingConfig(BaseModel):
+    enabled: bool = True
+    rate_limit: float = 0.5  # Minimum seconds between messages
+    max_messages: int = 20   # Max messages in time window
+    time_window: int = 60    # Time window in seconds
+
+
+class HealthCheckConfig(BaseModel):
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 8080
+
+
+class AnnouncementGroupConfig(BaseModel):
+    """Per-group announcement settings override."""
+    sleep_from: str | None = None  # "23:00" format
+    sleep_to: str | None = None    # "07:00" format
+    utc_offset: int | None = None  # UTC offset in hours (e.g., 5 for UTC+5)
+
+
+class AnnouncementsConfig(BaseModel):
+    enabled: bool = True
+    
+    # track last N messages per group to avoid spam
+    history_size: int = 20
+    
+    # max announcements in recent history before pausing
+    max_stack: int = 3
+    
+    # don't re-send same announcement if it's in last N messages
+    avoid_duplicate_in_last: int = 15
+    
+    # global sleep time (when not to send announcements)
+    sleep_from: str = ""  # "23:00" format, empty = no sleep
+    sleep_to: str = ""    # "07:00" format
+    utc_offset: int = 0   # UTC offset in hours (e.g., 5 for UTC+5)
+    
+    # per-group overrides (group_id -> settings)
+    groups: dict[int, AnnouncementGroupConfig] = {}
+    
+    @field_validator('groups', mode='before')
+    @classmethod
+    def convert_group_keys(cls, v):
+        """Convert string keys from TOML to int."""
+        if isinstance(v, dict):
+            return {int(k): AnnouncementGroupConfig.model_validate(val) for k, val in v.items()}
+        return v
+
+
+class CacheConfig(BaseModel):
+    # member data cache
+    members_maxsize: int = 500
+    members_ttl: int = 60  # seconds
+    
+    # telegram member cache
+    tgmembers_maxsize: int = 1000
+    tgmembers_ttl: int = 300  # seconds
+    
+    # gender detection cache (LRU, no TTL)
+    gender_maxsize: int = 500
+    
+    # nsfw detection cache
+    nsfw_maxsize: int = 200
+    nsfw_ttl: int = 3600  # seconds
+    
+    # batch update interval
+    batch_flush_interval: int = 30  # seconds
+    
+    # trusted user threshold (skip expensive checks)
+    trusted_user_messages: int = 100
+
+
+class MLConfig(BaseModel):
+    """ML model memory management settings."""
+    # auto-unload models when not used
+    auto_unload_enabled: bool = True
+    
+    # time in minutes before unloading spam model
+    spam_ttl_minutes: int = 10
+    
+    # time in minutes before unloading nsfw model
+    nsfw_ttl_minutes: int = 10
+    
+    # check interval in seconds
+    check_interval_seconds: int = 60
+
+
+class Config(BaseModel):
+    bot: BotConfig = BotConfig()
+    locale: LocaleConfig = LocaleConfig()
+    groups: GroupsConfig = GroupsConfig()
+    spam: SpamConfig = SpamConfig()
+    profanity: ProfanityConfig = ProfanityConfig()
+    nsfw: NSFWConfig = NSFWConfig()
+    db: DatabaseConfig = DatabaseConfig()
+    throttling: ThrottlingConfig = ThrottlingConfig()
+    healthcheck: HealthCheckConfig = HealthCheckConfig()
+    cache: CacheConfig = CacheConfig()
+    announcements: AnnouncementsConfig = AnnouncementsConfig()
+    ml: MLConfig = MLConfig()
+
+
+def get_config_path() -> Path:
+    import os
+    env_path = os.environ.get("CONFIG_FILE_PATH")
+    if env_path:
+        return Path(env_path)
+    return Path("config.toml")
+
+
+@lru_cache
+def parse_config_file() -> dict:
+    file_path = get_config_path()
+    if not file_path.exists():
+        return {}
+    with open(file_path, "rb") as file:
+        return load(file)
+
+
+def load_config() -> Config:
+    config_dict = parse_config_file()
+    return Config.model_validate(config_dict) if config_dict else Config()
+
+
+def _parse_int_list(value: str) -> List[int]:
+    """Parse comma-separated list of integers from env var."""
+    if not value:
+        return []
+    return [int(x.strip()) for x in value.split(",") if x.strip()]
+
+
+def apply_env_overrides(config: Config) -> Config:
+    import os
+    from dotenv import load_dotenv
+
+    if Path(".env").exists():
+        load_dotenv(".env")
+
+    if os.environ.get("BOT_TOKEN"):
+        config.bot.token = SecretStr(os.environ["BOT_TOKEN"])
+    if os.environ.get("BOT_OWNER"):
+        config.bot.owner = int(os.environ["BOT_OWNER"])
+    if os.environ.get("BOT_LOCALE"):
+        config.locale.default = os.environ["BOT_LOCALE"]
+    
+    # groups - now supports comma-separated lists
+    groups_changed = False
+    if os.environ.get("GROUPS_MAIN"):
+        config.groups.main = _parse_int_list(os.environ["GROUPS_MAIN"])
+        groups_changed = True
+    if os.environ.get("GROUPS_REPORTS"):
+        config.groups.reports = int(os.environ["GROUPS_REPORTS"])
+    if os.environ.get("GROUPS_LOGS"):
+        config.groups.logs = int(os.environ["GROUPS_LOGS"])
+    if os.environ.get("LINKED_CHANNELS"):
+        config.groups.linked_channels = _parse_int_list(os.environ["LINKED_CHANNELS"])
+        groups_changed = True
+    
+    # rebuild sets after modifying lists
+    if groups_changed:
+        config.groups.rebuild_sets()
+    
+    if os.environ.get("DB_URL"):
+        config.db.url = os.environ["DB_URL"]
+    if os.environ.get("HEALTHCHECK_PORT"):
+        config.healthcheck.port = int(os.environ["HEALTHCHECK_PORT"])
+
+    return config
+
+
+# Global config instance
+config = apply_env_overrides(load_config())
